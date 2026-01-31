@@ -16,6 +16,13 @@ if (!defined('ABSPATH')) {
 class DW_Pix_Core {
 
     /**
+     * Subtotal do carrinho antes de aplicar preços PIX (para calcular a taxa de desconto global).
+     *
+     * @var float
+     */
+    private static $subtotal_before_pix = 0;
+
+    /**
      * Construtor
      */
     public function __construct() {
@@ -26,10 +33,8 @@ class DW_Pix_Core {
      * Inicializa os hooks
      */
     private function init_hooks() {
-        // Hooks para aplicar preço PIX
         add_action('woocommerce_before_calculate_totals', array($this, 'apply_pix_price'), 10, 1);
-        
-        // Hook para atualizar checkout quando forma de pagamento muda
+        add_action('woocommerce_cart_calculate_fees', array($this, 'add_pix_discount_fee'), 10, 1);
         add_action('wp_footer', array($this, 'update_checkout_on_payment_change'));
     }
 
@@ -56,24 +61,64 @@ class DW_Pix_Core {
             return;
         }
 
-        // Aplica preço PIX para cada item do carrinho
+        // Guarda o subtotal original (só produtos) para a taxa de desconto global
+        self::$subtotal_before_pix = 0;
         foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
-            // Obtém o preço regular correto antes de qualquer modificação
-            $regular_price = $this->get_regular_price_for_cart_item($cart_item);
-            
-            // Se não tem preço regular válido, pula este item
-            if ($regular_price <= 0) {
+            $qty = isset($cart_item['quantity']) ? max(1, intval($cart_item['quantity'])) : 1;
+            self::$subtotal_before_pix += $this->get_current_price_for_cart_item($cart_item) * $qty;
+        }
+
+        // Aplica preço PIX apenas para itens com preço PIX individual (_pix_price).
+        foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
+            $current_price = $this->get_current_price_for_cart_item($cart_item);
+            if ($current_price <= 0) {
                 continue;
             }
-            
             $pix_price = $this->get_pix_price_for_cart_item($cart_item);
-            
-            // Validação rigorosa: só aplica se for um desconto válido
-            // O preço PIX deve ser maior que 0, menor que o regular, e não pode ser muito próximo de zero
-            if ($pix_price > 0.01 && $pix_price < $regular_price && ($regular_price - $pix_price) > 0.01) {
+            if ($pix_price > 0.01 && $pix_price < $current_price && ($current_price - $pix_price) > 0.01) {
                 $cart_item['data']->set_price($pix_price);
             }
         }
+    }
+
+    /**
+     * Adiciona taxa de desconto PIX sobre o subtotal dos produtos (somente produtos, sem frete).
+     * Ex.: subtotal R$ 1000, 3% → desconto R$ 30,00.
+     *
+     * @param WC_Cart $cart Objeto do carrinho
+     */
+    public function add_pix_discount_fee($cart) {
+        if (is_admin() && !defined('DOING_AJAX')) {
+            return;
+        }
+        $chosen = WC()->session ? WC()->session->get('chosen_payment_method') : '';
+        if (!$this->is_pix_payment($chosen)) {
+            return;
+        }
+        $global_settings = $this->get_global_settings();
+        $global_discount = isset($global_settings['global_discount']) ? trim($global_settings['global_discount']) : '';
+        if ($global_discount === '' || floatval($global_discount) <= 0) {
+            return;
+        }
+        $global_discount = floatval($global_discount);
+        if ($global_discount > 100) {
+            return;
+        }
+        // Usa o subtotal original (antes de aplicar preços PIX individuais) para o desconto global
+        $subtotal = self::$subtotal_before_pix > 0 ? floatval(self::$subtotal_before_pix) : floatval($cart->get_subtotal());
+        if ($subtotal <= 0) {
+            return;
+        }
+        $discount_amount = ($subtotal * $global_discount) / 100;
+        if ($discount_amount <= 0) {
+            return;
+        }
+        $label = sprintf(
+            /* translators: %s: percentual de desconto (ex: 3) */
+            __('%s%% OFF no PIX', 'dw-parcelas-customizadas-woo'),
+            number_format($global_discount, 0, ',', '')
+        );
+        $cart->add_fee($label, -$discount_amount, false);
     }
 
     /**
@@ -117,73 +162,61 @@ class DW_Pix_Core {
      *
      * @param int $product_id ID do produto
      * @param bool $apply_global_discount Se deve aplicar desconto global se não houver preço individual
-     * @param float $regular_price Preço regular (necessário para calcular desconto global)
+     * @param float $base_price Preço de referência (preço atual de venda, com desconto promocional se houver)
      * @return float
      */
-    public function get_pix_price($product_id, $apply_global_discount = false, $regular_price = 0) {
-        // Valida preço regular se fornecido
-        $regular_price = floatval($regular_price);
+    public function get_pix_price($product_id, $apply_global_discount = false, $base_price = 0) {
+        $base_price = floatval($base_price);
         
-        // Para produtos, sempre usar get_post_meta pois HPOS não afeta produtos
         $pix_price = get_post_meta($product_id, '_pix_price', true);
         
-        // Se tem preço PIX individual, valida e usa ele
         if (!empty($pix_price) && is_numeric($pix_price)) {
             $pix_price = floatval($pix_price);
-            
-            // Só retorna se for um valor válido e menor que o preço regular (se fornecido)
             if ($pix_price > 0) {
-                if ($regular_price > 0 && $pix_price < $regular_price) {
+                if ($base_price > 0 && $pix_price < $base_price) {
                     return $pix_price;
-                } elseif ($regular_price <= 0) {
-                    // Se não tem preço regular para comparar, retorna o preço PIX
+                }
+                if ($base_price <= 0) {
                     return $pix_price;
                 }
             }
         }
         
-        // Se não tem preço individual e deve aplicar desconto global
-        if ($apply_global_discount && $regular_price > 0) {
-            return $this->calculate_price_with_global_discount($regular_price);
+        if ($apply_global_discount && $base_price > 0) {
+            return $this->calculate_price_with_global_discount($base_price);
         }
         
         return 0;
     }
 
     /**
-     * Calcula preço com desconto global
+     * Calcula preço com desconto global (aplicado sobre o preço de referência informado)
      *
-     * @param float $regular_price Preço regular
+     * @param float $base_price Preço de referência (preço atual de venda)
      * @return float
      */
-    public function calculate_price_with_global_discount($regular_price) {
-        // Valida preço regular
-        $regular_price = floatval($regular_price);
-        if ($regular_price <= 0) {
+    public function calculate_price_with_global_discount($base_price) {
+        $base_price = floatval($base_price);
+        if ($base_price <= 0) {
             return 0;
         }
         
         $global_settings = $this->get_global_settings();
         $global_discount = isset($global_settings['global_discount']) ? trim($global_settings['global_discount']) : '';
         
-        // Se não tem desconto global configurado, retorna 0
         if (empty($global_discount)) {
             return 0;
         }
         
         $global_discount = floatval($global_discount);
-        
-        // Valida se o desconto está no range válido
         if ($global_discount <= 0 || $global_discount > 100) {
             return 0;
         }
         
-        // Calcula o desconto
-        $discount_amount = ($regular_price * $global_discount) / 100;
-        $pix_price = $regular_price - $discount_amount;
+        $discount_amount = ($base_price * $global_discount) / 100;
+        $pix_price = $base_price - $discount_amount;
         
-        // Valida se o preço PIX é menor que o regular e maior que zero
-        if ($pix_price > 0 && $pix_price < $regular_price) {
+        if ($pix_price > 0 && $pix_price < $base_price) {
             return $pix_price;
         }
         
@@ -207,53 +240,66 @@ class DW_Pix_Core {
     }
 
     /**
-     * Obtém o preço PIX para um item do carrinho (considera variações e desconto global)
+     * Obtém o preço PIX individual do item (_pix_price). Desconto global não é aplicado
+     * por item — é aplicado como taxa única sobre o subtotal em add_pix_discount_fee.
+     *
+     * @param array $cart_item Item do carrinho
+     * @return float Preço PIX individual ou 0
+     */
+    public function get_pix_price_for_cart_item($cart_item) {
+        $current_price = $this->get_current_price_for_cart_item($cart_item);
+        if ($current_price <= 0) {
+            return 0;
+        }
+        if (isset($cart_item['variation_id']) && $cart_item['variation_id'] > 0) {
+            $variation_pix_price = get_post_meta($cart_item['variation_id'], '_pix_price', true);
+            if (!empty($variation_pix_price) && is_numeric($variation_pix_price)) {
+                $pix_price = floatval($variation_pix_price);
+                if ($pix_price > 0 && $pix_price < $current_price) {
+                    return $pix_price;
+                }
+            }
+            return 0;
+        }
+        $product_id = $cart_item['product_id'];
+        $pix_price = get_post_meta($product_id, '_pix_price', true);
+        if (!empty($pix_price) && is_numeric($pix_price)) {
+            $pix_price = floatval($pix_price);
+            if ($pix_price > 0 && $pix_price < $current_price) {
+                return $pix_price;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Preço atual de venda do item no carrinho (com desconto promocional se houver).
+     * Usado como base para o desconto PIX.
      *
      * @param array $cart_item Item do carrinho
      * @return float
      */
-    public function get_pix_price_for_cart_item($cart_item) {
-        $product = $cart_item['data'];
-        
-        // Obtém preço regular corretamente
-        $regular_price = $this->get_regular_price_for_cart_item($cart_item);
-        
-        // Se não tem preço regular válido, não aplica desconto
-        if ($regular_price <= 0) {
-            return 0;
-        }
-        
-        // Se é uma variação, verifica primeiro o preço da variação
+    private function get_current_price_for_cart_item($cart_item) {
+        $price = $cart_item['data']->get_price();
+        return $price !== '' ? floatval($price) : 0;
+    }
+
+    /**
+     * Preço de venda do item (antes do PIX) a partir do meta. Usado no checkout para exibir
+     * o desconto PIX quando o preço do item já foi alterado para o preço PIX.
+     *
+     * @param array $cart_item Item do carrinho
+     * @return float
+     */
+    public function get_selling_price_for_cart_item($cart_item) {
         if (isset($cart_item['variation_id']) && $cart_item['variation_id'] > 0) {
-            $variation_pix_price = get_post_meta($cart_item['variation_id'], '_pix_price', true);
-            
-            if (!empty($variation_pix_price) && is_numeric($variation_pix_price)) {
-                $pix_price = floatval($variation_pix_price);
-                
-                // Valida se é um desconto válido
-                if ($pix_price > 0 && $pix_price < $regular_price) {
-                    return $pix_price;
-                }
-            }
-            
-            // Se não tem preço PIX individual na variação, tenta desconto global
-            $pix_price = $this->calculate_price_with_global_discount($regular_price);
-            if ($pix_price > 0 && $pix_price < $regular_price) {
-                return $pix_price;
-            }
-            
-            return 0;
+            $price = get_post_meta($cart_item['variation_id'], '_price', true);
+        } else {
+            $price = get_post_meta($cart_item['product_id'], '_price', true);
         }
-        
-        // Se não é uma variação, usa o preço do produto principal
-        $product_id = $cart_item['product_id'];
-        $pix_price = $this->get_pix_price($product_id, true, $regular_price);
-        
-        // Validação final: só retorna se for um desconto válido
-        if ($pix_price > 0 && $pix_price < $regular_price) {
-            return $pix_price;
+        if (!empty($price) && is_numeric($price)) {
+            return floatval($price);
         }
-        
         return 0;
     }
 

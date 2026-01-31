@@ -100,16 +100,16 @@ class DW_Pix_Frontend {
         
         ob_start();
         
-        $regular_price = floatval($product->get_regular_price());
+        $current_price = floatval($product->get_price());
         
-        if ($regular_price <= 0) {
+        if ($current_price <= 0) {
             return '';
         }
         
-        $pix_price = $this->core->get_pix_price($product->get_id(), true, $regular_price);
+        $pix_price = $this->core->get_pix_price($product->get_id(), true, $current_price);
         
-        if ($pix_price > 0 && $pix_price < $regular_price) {
-            $discount = $this->core->calculate_pix_discount($regular_price, $pix_price);
+        if ($pix_price > 0 && $pix_price < $current_price) {
+            $discount = $this->core->calculate_pix_discount($current_price, $pix_price);
             
             if ($discount['amount'] > 0 && $discount['percentage'] > 0) {
                 $this->render_pix_price_display($pix_price, $discount);
@@ -196,21 +196,17 @@ class DW_Pix_Frontend {
             return;
         }
         
-        $regular_price = floatval($product->get_regular_price());
+        $current_price = floatval($product->get_price());
         
-        // Se não tem preço regular válido, não exibe
-        if ($regular_price <= 0) {
+        if ($current_price <= 0) {
             return;
         }
         
-        // Tenta obter preço PIX individual ou aplica desconto global
-        $pix_price = $this->core->get_pix_price($product->get_id(), true, $regular_price);
+        $pix_price = $this->core->get_pix_price($product->get_id(), true, $current_price);
         
-        // Validações rigorosas antes de exibir
-        if ($pix_price > 0 && $pix_price < $regular_price) {
-            $discount = $this->core->calculate_pix_discount($regular_price, $pix_price);
+        if ($pix_price > 0 && $pix_price < $current_price) {
+            $discount = $this->core->calculate_pix_discount($current_price, $pix_price);
             
-            // Só exibe se houver desconto válido
             if ($discount['amount'] > 0 && $discount['percentage'] > 0) {
                 $pix_displayed = true;
                 $this->render_pix_price_display($pix_price, $discount);
@@ -234,21 +230,17 @@ class DW_Pix_Frontend {
             return;
         }
         
-        $regular_price = floatval($product->get_regular_price());
+        $current_price = floatval($product->get_price());
         
-        // Se não tem preço regular válido, não exibe
-        if ($regular_price <= 0) {
+        if ($current_price <= 0) {
             return;
         }
         
-        // Tenta obter preço PIX individual ou aplica desconto global
-        $pix_price = $this->core->get_pix_price($product->get_id(), true, $regular_price);
+        $pix_price = $this->core->get_pix_price($product->get_id(), true, $current_price);
         
-        // Validações rigorosas antes de exibir
-        if ($pix_price > 0 && $pix_price < $regular_price) {
-            $discount = $this->core->calculate_pix_discount($regular_price, $pix_price);
+        if ($pix_price > 0 && $pix_price < $current_price) {
+            $discount = $this->core->calculate_pix_discount($current_price, $pix_price);
             
-            // Só exibe se houver desconto válido
             if ($discount['amount'] > 0 && $discount['percentage'] > 0) {
                 $settings = $this->get_design_settings();
                 
@@ -264,49 +256,32 @@ class DW_Pix_Frontend {
                 $extra_classes = isset($settings['dw_pix_elementor_class']) ? ' ' . esc_attr($settings['dw_pix_elementor_class']) : '';
                 $using_elementor = isset($settings['using_elementor']) && $settings['using_elementor'] === true;
                 
-                // Monta estilos inline APENAS se NÃO estiver usando Elementor
-                $custom_style = '';
-                $price_style = '';
-                $text_style = '';
-                $discount_style = '';
-                
-                if (!$using_elementor) {
-                    // Gera CSS a partir dos campos visuais (galeria)
-                    $generated_css = $this->generate_visual_css($settings, 'gallery');
-                    
-                    // Estilos base
-                    $font_size = isset($settings['font_size']) ? $settings['font_size'] : '12';
-                    $base_styles = 'font-size: ' . esc_attr($font_size) . 'px;';
-                    
-                    if (!empty($settings['price_color'])) {
-                        $base_styles .= ' color: ' . esc_attr($settings['price_color']) . ';';
-                    }
-                    
-                    // Combina estilos base com CSS gerado
-                    $combined_style = $base_styles;
-                    if (!empty($generated_css)) {
-                        $combined_style .= ' ' . $generated_css;
-                    }
-                    
-                    // Margin padrão
-                    if (empty($generated_css) || strpos($generated_css, 'margin') === false) {
-                        $combined_style .= ' margin-top: 5px;';
-                    }
-                    
-                    $custom_style = ' style="' . esc_attr($combined_style) . '"';
-                    
-                    // Estilo para o preço
-                    $price_style = ' style="color: ' . esc_attr($settings['price_color']) . '; font-size: ' . esc_attr($font_size) . 'px;"';
-                    
-                    // Estilo para o texto principal
-                    if (!empty($settings['text_color'])) {
-                        $text_style = ' style="color: ' . esc_attr($settings['text_color']) . ';"';
-                    }
-                    
-                    // Cor do texto de desconto
-                    $discount_text_color = isset($settings['discount_text_color']) ? $settings['discount_text_color'] : '#666';
-                    $discount_style = ' style="color: ' . esc_attr($discount_text_color) . ';"';
+                // Sempre aplica estilos de "geral" como base em .dw-pix-price-info (background, borda,
+                // padding, margin, etc.); quando usa Elementor, o CSS dinâmico do widget sobrescreve
+                // apenas o que for alterado no design do PIX (com !important).
+                $inline_styles = $this->generate_inline_styles($settings);
+                $generated_css = $this->generate_visual_css($settings, 'gallery');
+                $font_size = isset($settings['font_size']) ? $settings['font_size'] : '12';
+                $base_styles = $inline_styles['container'] . ' font-size: ' . esc_attr($font_size) . 'px;';
+                if (!empty($settings['price_color'])) {
+                    $base_styles .= ' color: ' . esc_attr($settings['price_color']) . ';';
                 }
+                $combined_style = $base_styles;
+                if (!empty($generated_css)) {
+                    $combined_style .= ' ' . $generated_css;
+                }
+                if (empty($generated_css) || strpos($generated_css, 'margin') === false) {
+                    $combined_style .= ' margin-top: 5px;';
+                }
+                $custom_style = ' style="' . esc_attr($combined_style) . '"';
+                $price_color = isset($settings['price_color']) ? $settings['price_color'] : '';
+                $price_style = $price_color ? ' style="color: ' . esc_attr($price_color) . '; font-size: ' . esc_attr($font_size) . 'px;"' : '';
+                $text_style = '';
+                if (!empty($settings['text_color'])) {
+                    $text_style = ' style="color: ' . esc_attr($settings['text_color']) . ';"';
+                }
+                $discount_text_color = isset($settings['discount_text_color']) ? $settings['discount_text_color'] : '#666';
+                $discount_style = ' style="color: ' . esc_attr($discount_text_color) . ';"';
                 
                 // Verifica se deve exibir o ícone na galeria
                 $show_icon = isset($settings['show_pix_icon_gallery']) ? ($settings['show_pix_icon_gallery'] === '1' || $settings['show_pix_icon_gallery'] === 1) : true;
@@ -400,12 +375,10 @@ class DW_Pix_Frontend {
         $pix_price = $this->core->get_pix_price_for_cart_item($cart_item);
         
         if ($pix_price > 0) {
-            // Obtém o preço regular correto (antes de aplicar desconto PIX)
-            $regular_price = $this->get_regular_price_for_cart_item($cart_item);
+            $selling_price = $this->core->get_selling_price_for_cart_item($cart_item);
             
-            // Valida se tem preço regular válido
-            if ($regular_price > 0 && $pix_price < $regular_price) {
-                $discount = $this->core->calculate_pix_discount($regular_price, $pix_price);
+            if ($selling_price > 0 && $pix_price < $selling_price) {
+                $discount = $this->core->calculate_pix_discount($selling_price, $pix_price);
                 
                 // Validações rigorosas antes de exibir
                 if ($discount['amount'] > 0 && $discount['percentage'] > 0 && $discount['percentage'] < 100) {
@@ -477,26 +450,28 @@ class DW_Pix_Frontend {
             return;
         }
         
-        // Obtém preços PIX das variações
+        // Preços PIX e preço atual (de venda) por variação — base para desconto é o preço atual, não o cheio
         $variation_pix_prices = array();
-        $variation_regular_prices = array();
+        $variation_display_prices = array();
         $variations = $product->get_available_variations();
         
         foreach ($variations as $variation) {
             $variation_id = $variation['variation_id'];
             $pix_price = get_post_meta($variation_id, '_pix_price', true);
-            $regular_price = get_post_meta($variation_id, '_regular_price', true);
+            $display_price = get_post_meta($variation_id, '_price', true);
+            if (empty($display_price) || !is_numeric($display_price)) {
+                $display_price = get_post_meta($variation_id, '_regular_price', true);
+            }
             
             if (!empty($pix_price) && is_numeric($pix_price) && $pix_price > 0) {
                 $variation_pix_prices[$variation_id] = floatval($pix_price);
             }
             
-            if (!empty($regular_price) && is_numeric($regular_price)) {
-                $variation_regular_prices[$variation_id] = floatval($regular_price);
+            if (!empty($display_price) && is_numeric($display_price)) {
+                $variation_display_prices[$variation_id] = floatval($display_price);
             }
         }
         
-        // Se não tem preços PIX configurados, não exibe o script
         if (empty($variation_pix_prices)) {
             return;
         }
@@ -504,11 +479,10 @@ class DW_Pix_Frontend {
         ?>
         <script type="text/javascript">
         jQuery(document).ready(function($) {
-            // Inicializa o sistema de preços PIX para produtos variáveis
             if (typeof window.DWVariablePixPrice !== 'undefined') {
                 window.DWVariablePixPrice.init(
                     <?php echo json_encode($variation_pix_prices); ?>,
-                    <?php echo json_encode($variation_regular_prices); ?>
+                    <?php echo json_encode($variation_display_prices); ?>
                 );
             }
         });
@@ -778,24 +752,21 @@ class DW_Pix_Frontend {
             return;
         }
 
-        // Obtém preço PIX
-        $pix_price = $this->core->get_pix_price($product);
+        $current_price = floatval($product->get_price());
         
-        if (!$pix_price || $pix_price <= 0) {
-            // Retorna sucesso vazio ao invés de erro
+        if ($current_price <= 0) {
             wp_send_json_success(array('html' => ''));
             return;
         }
 
-        // Obtém preço regular
-        $regular_price = $product->get_regular_price();
+        $pix_price = $this->core->get_pix_price($product->get_id(), true, $current_price);
         
-        if (!$regular_price || $regular_price <= 0) {
-            $regular_price = $product->get_price();
+        if (!$pix_price || $pix_price <= 0 || $pix_price >= $current_price) {
+            wp_send_json_success(array('html' => ''));
+            return;
         }
 
-        // Calcula desconto
-        $discount = $this->core->calculate_pix_discount($regular_price, $pix_price);
+        $discount = $this->core->calculate_pix_discount($current_price, $pix_price);
         
         // Obtém configurações de design
         $settings = $this->get_design_settings();

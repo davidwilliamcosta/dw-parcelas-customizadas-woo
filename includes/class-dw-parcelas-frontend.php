@@ -385,11 +385,11 @@ class DW_Parcelas_Frontend {
             global $product;
             if ($product) {
                 $pix_core = new DW_Pix_Core();
-                $regular_price = floatval($product->get_regular_price());
-                $pix_price = $pix_core->get_pix_price($product->get_id(), true, $regular_price);
+                $current_price = floatval($product->get_price());
+                $pix_price = $pix_core->get_pix_price($product->get_id(), true, $current_price);
                 
-                if ($pix_price > 0 && $pix_price < $regular_price) {
-                    $discount = $pix_core->calculate_pix_discount($regular_price, $pix_price);
+                if ($pix_price > 0 && $pix_price < $current_price) {
+                    $discount = $pix_core->calculate_pix_discount($current_price, $pix_price);
                     if ($discount['percentage'] > 0) {
                         echo '<tr class="dw-parcelas-pix-row">';
                         echo '<td>';
@@ -634,14 +634,10 @@ class DW_Parcelas_Frontend {
         
         // Adiciona classes adicionais do Elementor se disponíveis
         $extra_classes = isset($design_settings['dw_installments_elementor_class']) ? ' ' . esc_attr($design_settings['dw_installments_elementor_class']) : '';
-        $using_elementor = isset($design_settings['using_elementor']) && $design_settings['using_elementor'] === true;
-        
-        // Monta estilos inline APENAS se NÃO estiver usando Elementor
-        $wrapper_style = '';
-        if (!$using_elementor) {
-            $generated_css = $this->generate_visual_css($design_settings, 'gallery');
-            $wrapper_style = !empty($generated_css) ? ' style="' . esc_attr($generated_css) . '"' : '';
-        }
+        // Sempre aplica estilos de "geral" como base; quando usa Elementor, o CSS dinâmico
+        // do widget sobrescreve apenas o que for alterado no design (com !important).
+        $generated_css = $this->generate_visual_css($design_settings, 'gallery');
+        $wrapper_style = !empty($generated_css) ? ' style="' . esc_attr($generated_css) . '"' : '';
         
         echo '<div class="dw-parcelas-gallery-wrapper dw-installments-info dw-installments-info-gallery' . $extra_classes . '"' . $wrapper_style . '>';
         $this->render_best_installment_summary($best, $price, $design_settings, 'gallery');

@@ -119,16 +119,23 @@ class DW_Elementor_Integration {
             return;
         }
 
-        // Define em qual seção devemos adicionar nossa nova seção (após ela terminar)
-        // Para Woodmart: após 'extra_style_section' (última seção de estilo)
-        // Para Elementor padrão: após 'section_style'
+        // Define em qual seção devemos adicionar nossa nova seção (após ela terminar).
+        // Inclui seções do Elementor Pro "Arquivo de Produtos" e outros widgets de produtos.
         $trigger_sections = array(
             'extra_style_section',     // Woodmart - última seção de estilo
             'section_style',           // Elementor padrão
+            'section_content',         // Elementor Pro - aba Conteúdo
+            'section_layout',          // Elementor - Layout
+            'section_design',           // Elementor - Design
+            'section_products',        // Elementor Pro WooCommerce
+            'section_box_style',       // Estilo da caixa
+            'section_archive',         // Arquivo
         );
-        
-        // Apenas processa após as seções corretas
-        if (!in_array($section_id, $trigger_sections)) {
+
+        // Widgets de arquivo: aceita qualquer seção para garantir que a nossa apareça
+        $is_archive_widget = in_array($widget_name, array('woocommerce-archive-products', 'archive-products', 'wc-archive-products'), true);
+
+        if (!$is_archive_widget && !in_array($section_id, $trigger_sections)) {
             return;
         }
 
@@ -160,9 +167,10 @@ class DW_Elementor_Integration {
      * Verifica se é um widget de produtos
      */
     private function is_product_widget($widget_name, $widget_class = '') {
-        // Lista específica de widgets de produtos
+        // Lista específica de widgets de produtos (inclui Arquivo de Produtos do Elementor Pro)
         $product_widgets = array(
             'woocommerce-products',
+            'woocommerce-archive-products',  // Elementor Pro - Arquivo de Produtos
             'wc-archive-products',
             'products',
             'archive-products',
@@ -729,16 +737,72 @@ class DW_Elementor_Integration {
     }
 
     /**
+     * Obtém configurações do widget de produtos do documento atual (fallback para arquivo/loop).
+     * Usado quando o loop de produtos é renderizado sem passar por before_render_widget do widget.
+     *
+     * @return array|null Array com 'id' e 'settings' ou null
+     */
+    private function get_archive_products_widget_settings() {
+        if (!$this->is_elementor_active() || !function_exists('is_shop')) {
+            return null;
+        }
+        if (!is_shop() && !is_product_category() && !is_product_tag() && !is_post_type_archive('product')) {
+            return null;
+        }
+        $document = \Elementor\Plugin::$instance->documents->get_current();
+        if (!$document) {
+            return null;
+        }
+        $elements_data = $document->get_elements_data();
+        if (empty($elements_data)) {
+            return null;
+        }
+        return $this->find_first_product_widget_in_elements($elements_data);
+    }
+
+    /**
+     * Encontra o primeiro widget de produtos nos dados de elementos (recursivo).
+     *
+     * @param array $elements
+     * @return array|null Array com 'id' e 'settings' ou null
+     */
+    private function find_first_product_widget_in_elements($elements) {
+        foreach ($elements as $element) {
+            $widget_type = isset($element['widgetType']) ? $element['widgetType'] : '';
+            if ($widget_type && $this->is_product_widget($widget_type, '')) {
+                $element_id = isset($element['id']) ? $element['id'] : '';
+                $widget_settings = isset($element['settings']) ? $element['settings'] : array();
+                return array('id' => $element_id, 'settings' => $widget_settings);
+            }
+            if (!empty($element['elements']) && is_array($element['elements'])) {
+                $found = $this->find_first_product_widget_in_elements($element['elements']);
+                if ($found !== null) {
+                    return $found;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * Aplica configurações do Elementor ao preço PIX
      */
     public function apply_elementor_pix_settings($settings, $product) {
-        // Se não tem configurações do Elementor, retorna as configurações padrão
-        if (empty(self::$current_widget_settings)) {
-            return $settings;
-        }
-
         $elementor_settings = self::$current_widget_settings;
         $element_id = self::$current_widget_id;
+
+        // Fallback: em páginas de arquivo (loja, categoria), tenta obter do documento
+        if (empty($elementor_settings)) {
+            $archive_widget = $this->get_archive_products_widget_settings();
+            if ($archive_widget !== null && !empty($archive_widget['settings'])) {
+                $elementor_settings = $archive_widget['settings'];
+                $element_id = $archive_widget['id'];
+            }
+        }
+
+        if (empty($elementor_settings)) {
+            return $settings;
+        }
         
         // Marca que está usando Elementor (para remover estilos inline)
         $settings['using_elementor'] = true;
@@ -752,13 +816,11 @@ class DW_Elementor_Integration {
         if (isset($elementor_settings['dw_pix_show_discount'])) {
             $settings['dw_pix_show_discount'] = $elementor_settings['dw_pix_show_discount'] === 'yes' ? 'yes' : 'no';
         }
-        
-        // Remove estilos inline para que o CSS do Elementor tenha controle total
-        $settings['background_color'] = '';
-        $settings['text_color'] = '';
-        $settings['price_color'] = '';
-        $settings['discount_text_color'] = '';
-        $settings['font_size'] = '';
+
+        // Mantém os estilos de "geral" como base; o CSS dinâmico do Elementor sobrescreve
+        // apenas as propriedades que o usuário alterar no design do widget (com !important).
+        // Não limpa background_color, text_color, etc. — assim .dw-pix-price-info sempre
+        // recebe o design geral e o Elementor só sobrescreve o que for configurado no widget.
         
         return $settings;
     }
@@ -767,13 +829,21 @@ class DW_Elementor_Integration {
      * Aplica configurações do Elementor às parcelas
      */
     public function apply_elementor_installments_settings($settings, $product) {
-        // Se não tem configurações do Elementor, retorna as configurações padrão
-        if (empty(self::$current_widget_settings)) {
-            return $settings;
-        }
-
         $elementor_settings = self::$current_widget_settings;
         $element_id = self::$current_widget_id;
+
+        // Fallback: em páginas de arquivo (loja, categoria), tenta obter do documento
+        if (empty($elementor_settings)) {
+            $archive_widget = $this->get_archive_products_widget_settings();
+            if ($archive_widget !== null && !empty($archive_widget['settings'])) {
+                $elementor_settings = $archive_widget['settings'];
+                $element_id = $archive_widget['id'];
+            }
+        }
+
+        if (empty($elementor_settings)) {
+            return $settings;
+        }
         
         // Marca que está usando Elementor (para remover estilos inline)
         $settings['using_elementor'] = true;
@@ -787,11 +857,9 @@ class DW_Elementor_Integration {
         if (isset($elementor_settings['dw_show_installments'])) {
             $settings['dw_show_installments'] = $elementor_settings['dw_show_installments'] === 'yes' ? 'yes' : 'no';
         }
-        
-        // Remove estilos inline para que o CSS do Elementor tenha controle total
-        $settings['background_color'] = '';
-        $settings['text_color'] = '';
-        $settings['font_size'] = '';
+
+        // Mantém os estilos de "geral" como base; o CSS dinâmico do Elementor sobrescreve
+        // apenas as propriedades alteradas no design do widget (com !important).
         
         return $settings;
     }

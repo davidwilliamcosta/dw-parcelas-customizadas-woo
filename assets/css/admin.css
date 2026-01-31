@@ -856,11 +856,8 @@
 .dw-pix-settings-wrap textarea:focus {
     outline: 2px solid #4caf50;
     outline-offset: 2px;
-}
-
-/* Melhor contraste para textos de ajuda */
+}/* Melhor contraste para textos de ajuda */
 .dw-pix-settings-wrap .description {
     color: #5a5a5a;
     line-height: 1.5;
 }
-
