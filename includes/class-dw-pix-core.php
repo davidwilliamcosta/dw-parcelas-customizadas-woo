@@ -16,13 +16,6 @@ if (!defined('ABSPATH')) {
 class DW_Pix_Core {
 
     /**
-     * Subtotal do carrinho antes de aplicar preços PIX (para calcular a taxa de desconto global).
-     *
-     * @var float
-     */
-    private static $subtotal_before_pix = 0;
-
-    /**
      * Construtor
      */
     public function __construct() {
@@ -61,13 +54,6 @@ class DW_Pix_Core {
             return;
         }
 
-        // Guarda o subtotal original (só produtos) para a taxa de desconto global
-        self::$subtotal_before_pix = 0;
-        foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
-            $qty = isset($cart_item['quantity']) ? max(1, intval($cart_item['quantity'])) : 1;
-            self::$subtotal_before_pix += $this->get_current_price_for_cart_item($cart_item) * $qty;
-        }
-
         // Aplica preço PIX apenas para itens com preço PIX individual (_pix_price).
         foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
             $current_price = $this->get_current_price_for_cart_item($cart_item);
@@ -83,7 +69,7 @@ class DW_Pix_Core {
 
     /**
      * Adiciona taxa de desconto PIX sobre o subtotal dos produtos (somente produtos, sem frete).
-     * Ex.: subtotal R$ 1000, 3% → desconto R$ 30,00.
+     * Usa sempre o subtotal oficial do carrinho para que carrinho e checkout calculem igual.
      *
      * @param WC_Cart $cart Objeto do carrinho
      */
@@ -104,8 +90,8 @@ class DW_Pix_Core {
         if ($global_discount > 100) {
             return;
         }
-        // Usa o subtotal original (antes de aplicar preços PIX individuais) para o desconto global
-        $subtotal = self::$subtotal_before_pix > 0 ? floatval(self::$subtotal_before_pix) : floatval($cart->get_subtotal());
+        // Subtotal para o desconto: tenta usar apenas itens "selecionados" (temas com checkboxes no carrinho)
+        $subtotal = $this->get_subtotal_for_pix_discount($cart);
         if ($subtotal <= 0) {
             return;
         }
@@ -119,6 +105,131 @@ class DW_Pix_Core {
             number_format($global_discount, 0, ',', '')
         );
         $cart->add_fee($label, -$discount_amount, false);
+    }
+
+    /**
+     * Retorna o subtotal usado para calcular o desconto PIX (somente produtos, sem frete).
+     * Integrado ao plugin DW Select Cart Products (dw-select-cart-products):
+     * - Usa selected_for_checkout em cada item (true = selecionado para checkout).
+     * - Soma line_subtotal dos selecionados, igual ao filter_cart_subtotal do select.
+     * - Fallback: sessão dw_scp_selections_backup (cart_key => bool) se o item não tiver a chave.
+     *
+     * @param WC_Cart $cart Objeto do carrinho
+     * @return float
+     */
+    private function get_subtotal_for_pix_discount($cart) {
+        $subtotal = floatval($cart->get_subtotal());
+
+        // DW Select Cart Products: selected_for_checkout no item ou dw_scp_selections_backup na sessão
+        $sum_selected = 0;
+        $has_selected_for_checkout = false;
+        $session_backup = (WC()->session && method_exists(WC()->session, 'get'))
+            ? WC()->session->get('dw_scp_selections_backup', array())
+            : array();
+        if (!is_array($session_backup)) {
+            $session_backup = array();
+        }
+        foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
+            $is_selected = isset($cart_item['selected_for_checkout'])
+                ? ($cart_item['selected_for_checkout'] === true)
+                : (isset($session_backup[$cart_item_key]) ? ($session_backup[$cart_item_key] === true) : null);
+            if ($is_selected === null) {
+                continue;
+            }
+            $has_selected_for_checkout = true;
+            if ($is_selected) {
+                // Mesmo critério do dw-select-cart-products (filter_cart_subtotal): line_subtotal quando existir
+                if (isset($cart_item['line_subtotal']) && is_numeric($cart_item['line_subtotal'])) {
+                    $sum_selected += floatval($cart_item['line_subtotal']);
+                } else {
+                    $qty = isset($cart_item['quantity']) ? max(0, intval($cart_item['quantity'])) : 0;
+                    $sum_selected += $this->get_current_price_for_cart_item($cart_item) * $qty;
+                }
+            }
+        }
+        if ($has_selected_for_checkout && $sum_selected >= 0) {
+            return (float) apply_filters('dw_pix_discount_subtotal', $sum_selected, $cart);
+        }
+
+        // Temas com "selecionar itens" no carrinho podem guardar chaves na sessão
+        $selected_keys = null;
+        $excluded_keys = null;
+        if (WC()->session) {
+            foreach (array('cart_item_keys_selected', 'cart_item_keys_included', 'woocommerce_cart_selected_keys', 'cart_selected_items') as $key) {
+                $val = WC()->session->get($key);
+                if (is_array($val) && !empty($val)) {
+                    $selected_keys = $val;
+                    break;
+                }
+            }
+            if ($selected_keys === null) {
+                $val = WC()->session->get('cart_item_keys_excluded');
+                if (is_array($val)) {
+                    $excluded_keys = $val;
+                }
+            }
+        }
+
+        if ($selected_keys !== null) {
+            $sum = 0;
+            foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
+                if (!in_array($cart_item_key, $selected_keys, true)) {
+                    continue;
+                }
+                $qty = isset($cart_item['quantity']) ? max(0, intval($cart_item['quantity'])) : 0;
+                $sum += $this->get_current_price_for_cart_item($cart_item) * $qty;
+            }
+            if ($sum > 0) {
+                $subtotal = $sum;
+            }
+        } elseif ($excluded_keys !== null) {
+            $sum = 0;
+            foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
+                if (in_array($cart_item_key, $excluded_keys, true)) {
+                    continue;
+                }
+                $qty = isset($cart_item['quantity']) ? max(0, intval($cart_item['quantity'])) : 0;
+                $sum += $this->get_current_price_for_cart_item($cart_item) * $qty;
+            }
+            if ($sum > 0) {
+                $subtotal = $sum;
+            }
+        } else {
+            // Alguns temas marcam itens "incluídos" por meta no cart item
+            $sum_included = 0;
+            $has_included_meta = false;
+            foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
+                $included = isset($cart_item['included']) ? $cart_item['included'] : (isset($cart_item['selected']) ? $cart_item['selected'] : null);
+                if ($included !== null) {
+                    $has_included_meta = true;
+                    if ($included && $included !== '0' && $included !== false) {
+                        $qty = isset($cart_item['quantity']) ? max(0, intval($cart_item['quantity'])) : 0;
+                        $sum_included += $this->get_current_price_for_cart_item($cart_item) * $qty;
+                    }
+                }
+            }
+            if ($has_included_meta && $sum_included > 0) {
+                $subtotal = $sum_included;
+            }
+        }
+
+        /**
+         * Filtro para o subtotal usado no desconto PIX (somente produtos).
+         * Use quando o tema tem "selecionar itens" no carrinho e guarda as chaves em outro lugar.
+         *
+         * Exemplo (no functions.php do tema ou em snippet):
+         * add_filter('dw_pix_discount_subtotal', function($subtotal, $cart) {
+         *     $keys = WC()->session->get('nome_da_chave_do_seu_tema'); // ex: 'cart_items_selected'
+         *     if (!is_array($keys) || empty($keys)) return $subtotal;
+         *     $sum = 0;
+         *     foreach ($cart->get_cart() as $key => $item) {
+         *         if (!in_array($key, $keys, true)) continue;
+         *         $sum += $item['data']->get_price() * (isset($item['quantity']) ? $item['quantity'] : 1);
+         *     }
+         *     return $sum > 0 ? $sum : $subtotal;
+         * }, 10, 2);
+         */
+        return (float) apply_filters('dw_pix_discount_subtotal', $subtotal, $cart);
     }
 
     /**

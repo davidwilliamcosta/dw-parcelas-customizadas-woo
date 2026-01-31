@@ -848,9 +848,7 @@
 
 /* ==========================================================================
    Melhorias de Acessibilidade
-   ========================================================================== */
-
-/* Melhor feedback visual para foco em elementos interativos */
+   ========================================================================== *//* Melhor feedback visual para foco em elementos interativos */
 .dw-pix-settings-wrap input:focus,
 .dw-pix-settings-wrap select:focus,
 .dw-pix-settings-wrap textarea:focus {
