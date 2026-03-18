@@ -42,6 +42,10 @@ class DW_Pix_Core {
             return;
         }
 
+        if (!$this->is_checkout_context()) {
+            return;
+        }
+
         // Evita loop infinito
         if (did_action('woocommerce_before_calculate_totals') >= 2) {
             return;
@@ -77,6 +81,9 @@ class DW_Pix_Core {
         if (is_admin() && !defined('DOING_AJAX')) {
             return;
         }
+        if (!$this->is_checkout_context()) {
+            return;
+        }
         $chosen = WC()->session ? WC()->session->get('chosen_payment_method') : '';
         if (!$this->is_pix_payment($chosen)) {
             return;
@@ -105,6 +112,31 @@ class DW_Pix_Core {
             number_format($global_discount, 0, ',', '')
         );
         $cart->add_fee($label, -$discount_amount, false);
+    }
+
+    /**
+     * Verifica se a execução atual está acontecendo no checkout.
+     *
+     * @return bool
+     */
+    private function is_checkout_context() {
+        if (function_exists('is_checkout') && is_checkout()) {
+            return true;
+        }
+
+        if (!(defined('DOING_AJAX') && DOING_AJAX)) {
+            return false;
+        }
+
+        $ajax_action = '';
+
+        if (isset($_REQUEST['wc-ajax'])) {
+            $ajax_action = sanitize_key(wp_unslash($_REQUEST['wc-ajax']));
+        } elseif (isset($_REQUEST['action'])) {
+            $ajax_action = sanitize_key(wp_unslash($_REQUEST['action']));
+        }
+
+        return in_array($ajax_action, array('update_order_review', 'checkout', 'woocommerce_update_order_review'), true);
     }
 
     /**
@@ -539,17 +571,22 @@ class DW_Pix_Core {
      * Atualiza o carrinho quando a forma de pagamento muda
      */
     public function update_checkout_on_payment_change() {
-        if (is_checkout() && !is_wc_endpoint_url()) {
-            ?>
-            <script type="text/javascript">
-            jQuery(function($) {
-                $('form.checkout').on('change', 'input[name="payment_method"]', function() {
-                    $(document.body).trigger('update_checkout');
-                });
-            });
-            </script>
-            <?php
+        if (!function_exists('is_checkout') || !is_checkout()) {
+            return;
         }
+
+        ?>
+        <script type="text/javascript">
+        jQuery(function($) {
+            // Compatibilidade com checkouts personalizados (como WooFlow):
+            // garante que qualquer alteração no método de pagamento dispare
+            // o update_checkout mesmo quando a página não é detectada como is_checkout().
+            $('form.checkout').on('change', 'input[name="payment_method"]', function() {
+                $(document.body).trigger('update_checkout');
+            });
+        });
+        </script>
+        <?php
     }
 
     /**

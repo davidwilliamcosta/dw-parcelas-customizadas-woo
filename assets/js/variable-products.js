@@ -61,20 +61,21 @@
             var $container = $('.dw-pix-variation-price');
             
             if ($container.length === 0) {
-                $container = $('.dw-pix-price-info');
-                if ($container.length === 0) {
-                    // Tenta diferentes seletores para encontrar o local correto
-                    var $target = $('.woocommerce-variation-price');
-                    if ($target.length === 0) {
-                        $target = $('.woocommerce-Price-amount').closest('.woocommerce-variation-price');
-                    }
-                    if ($target.length === 0) {
-                        $target = $('.price');
-                    }
-                    
-                    $target.after('<div class="dw-pix-price-info" style="display: none;"></div>');
-                    $container = $('.dw-pix-price-info');
+                // Nunca reutiliza .dw-pix-price-info para evitar sobrescrever
+                // o bloco principal e gerar renderização duplicada.
+                var $target = $('.woocommerce-variation-price');
+                if ($target.length === 0) {
+                    $target = $('.single_variation_wrap');
                 }
+                if ($target.length === 0) {
+                    $target = $('.variations_form');
+                }
+                if ($target.length === 0) {
+                    $target = $('.price').last();
+                }
+
+                $target.after('<div class="dw-pix-variation-price" style="display: none;"></div>');
+                $container = $('.dw-pix-variation-price').first();
             }
             
             this.config.container = $container;

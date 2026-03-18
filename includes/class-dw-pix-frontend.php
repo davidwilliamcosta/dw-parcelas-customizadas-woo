@@ -195,6 +195,12 @@ class DW_Pix_Frontend {
         if (!$product) {
             return;
         }
+
+        // Produtos variáveis devem exibir o PIX apenas pelo fluxo de variações
+        // (container + JS), evitando bloco duplicado e preço-base incorreto do pai.
+        if ($product->is_type('variable')) {
+            return;
+        }
         
         $current_price = floatval($product->get_price());
         
@@ -889,4 +895,3 @@ class DW_Pix_Frontend {
         return ob_get_clean();
     }
 }
-
