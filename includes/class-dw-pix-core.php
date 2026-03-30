@@ -28,6 +28,7 @@ class DW_Pix_Core {
     private function init_hooks() {
         add_action('woocommerce_before_calculate_totals', array($this, 'apply_pix_price'), 10, 1);
         add_action('woocommerce_cart_calculate_fees', array($this, 'add_pix_discount_fee'), 10, 1);
+        add_action('woocommerce_checkout_create_order', array($this, 'convert_pix_fee_to_order_discount'), 20, 2);
         add_action('wp_footer', array($this, 'update_checkout_on_payment_change'));
     }
 
@@ -106,12 +107,50 @@ class DW_Pix_Core {
         if ($discount_amount <= 0) {
             return;
         }
-        $label = sprintf(
-            /* translators: %s: percentual de desconto (ex: 3) */
-            __('%s%% OFF no PIX', 'dw-parcelas-customizadas-woo'),
-            number_format($global_discount, 0, ',', '')
-        );
+        $label = $this->get_pix_discount_label($global_discount);
         $cart->add_fee($label, -$discount_amount, false);
+    }
+
+    /**
+     * Converte a taxa negativa do PIX em desconto do pedido.
+     *
+     * No carrinho/checkout o WooCommerce só oferece fee negativa de forma simples,
+     * mas no pedido final precisamos registrar isso como desconto.
+     *
+     * @param WC_Order $order Objeto do pedido em criação.
+     * @param array    $data  Dados do checkout.
+     */
+    public function convert_pix_fee_to_order_discount($order, $data) {
+        unset($data);
+
+        if (!is_a($order, 'WC_Order')) {
+            return;
+        }
+
+        $pix_discount_total = 0.0;
+        $pix_discount_tax = 0.0;
+
+        foreach ($order->get_items('fee') as $item_id => $fee_item) {
+            if (!$this->is_pix_discount_fee_item($fee_item)) {
+                continue;
+            }
+
+            $fee_total = (float) $fee_item->get_total();
+            if ($fee_total >= 0) {
+                continue;
+            }
+
+            $pix_discount_total += abs($fee_total);
+            $pix_discount_tax += abs((float) $fee_item->get_total_tax());
+            $order->remove_item($item_id);
+        }
+
+        if ($pix_discount_total <= 0) {
+            return;
+        }
+
+        $order->set_discount_total((float) $order->get_discount_total() + $pix_discount_total);
+        $order->set_discount_tax((float) $order->get_discount_tax() + $pix_discount_tax);
     }
 
     /**
@@ -262,6 +301,52 @@ class DW_Pix_Core {
          * }, 10, 2);
          */
         return (float) apply_filters('dw_pix_discount_subtotal', $subtotal, $cart);
+    }
+
+    /**
+     * Retorna o rótulo padrão do desconto PIX global.
+     *
+     * @param float $global_discount Percentual do desconto.
+     * @return string
+     */
+    private function get_pix_discount_label($global_discount) {
+        $global_discount = (float) $global_discount;
+        $formatted_discount = wc_format_decimal($global_discount, 2);
+        $formatted_discount = rtrim(rtrim($formatted_discount, '0'), '.');
+
+        return sprintf(
+            /* translators: %s: percentual de desconto (ex: 3) */
+            __('%s%% OFF no PIX', 'dw-parcelas-customizadas-woo'),
+            str_replace('.', ',', $formatted_discount)
+        );
+    }
+
+    /**
+     * Verifica se a taxa do pedido corresponde ao desconto PIX criado pelo plugin.
+     *
+     * @param WC_Order_Item_Fee $fee_item Item de taxa do pedido.
+     * @return bool
+     */
+    private function is_pix_discount_fee_item($fee_item) {
+        if (!is_a($fee_item, 'WC_Order_Item_Fee')) {
+            return false;
+        }
+
+        $fee_name = trim((string) $fee_item->get_name());
+        if ($fee_name === '') {
+            return false;
+        }
+
+        $global_settings = $this->get_global_settings();
+        $global_discount = isset($global_settings['global_discount']) ? trim($global_settings['global_discount']) : '';
+
+        if ($global_discount !== '' && (float) $global_discount > 0) {
+            if ($fee_name === $this->get_pix_discount_label($global_discount)) {
+                return true;
+            }
+        }
+
+        return (bool) preg_match('/^\s*[\d.,]+\s*%\s+OFF\s+no\s+PIX\s*$/iu', $fee_name);
     }
 
     /**
