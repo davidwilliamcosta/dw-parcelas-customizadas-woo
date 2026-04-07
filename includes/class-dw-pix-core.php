@@ -16,6 +16,13 @@ if (!defined('ABSPATH')) {
 class DW_Pix_Core {
 
     /**
+     * Evita registrar os mesmos hooks mais de uma vez.
+     *
+     * @var bool
+     */
+    private static $hooks_initialized = false;
+
+    /**
      * Construtor
      */
     public function __construct() {
@@ -26,10 +33,18 @@ class DW_Pix_Core {
      * Inicializa os hooks
      */
     private function init_hooks() {
+        if (self::$hooks_initialized) {
+            return;
+        }
+
         add_action('woocommerce_before_calculate_totals', array($this, 'apply_pix_price'), 10, 1);
-        add_action('woocommerce_cart_calculate_fees', array($this, 'add_pix_discount_fee'), 10, 1);
+        add_filter('woocommerce_calculated_total', array($this, 'apply_pix_discount_to_calculated_total'), 20, 2);
+        add_action('woocommerce_review_order_before_order_total', array($this, 'render_pix_discount_total_row'));
+        add_action('woocommerce_cart_totals_before_order_total', array($this, 'render_pix_discount_total_row'));
         add_action('woocommerce_checkout_create_order', array($this, 'convert_pix_fee_to_order_discount'), 20, 2);
         add_action('wp_footer', array($this, 'update_checkout_on_payment_change'));
+
+        self::$hooks_initialized = true;
     }
 
     /**
@@ -112,6 +127,47 @@ class DW_Pix_Core {
     }
 
     /**
+     * Aplica o desconto PIX diretamente ao total calculado do carrinho.
+     *
+     * @param float   $total Total calculado pelo WooCommerce.
+     * @param WC_Cart $cart  Objeto do carrinho.
+     * @return float
+     */
+    public function apply_pix_discount_to_calculated_total($total, $cart) {
+        if (!($cart instanceof WC_Cart)) {
+            return $total;
+        }
+
+        $discount_amount = $this->get_global_pix_discount_amount($cart);
+        if ($discount_amount <= 0) {
+            return $total;
+        }
+
+        $adjusted_total = (float) $total - $discount_amount;
+
+        return $adjusted_total > 0 ? $adjusted_total : 0;
+    }
+
+    /**
+     * Exibe a linha de desconto PIX no resumo do carrinho/checkout.
+     */
+    public function render_pix_discount_total_row() {
+        if (!WC()->cart) {
+            return;
+        }
+
+        $discount_amount = $this->get_global_pix_discount_amount(WC()->cart);
+        if ($discount_amount <= 0) {
+            return;
+        }
+
+        echo '<tr class="dw-pix-discount-total">';
+        echo '<th>' . esc_html__('Desconto', 'dw-parcelas-customizadas-woo') . '</th>';
+        echo '<td data-title="' . esc_attr__('Desconto', 'dw-parcelas-customizadas-woo') . '">-' . wp_kses_post(wc_price($discount_amount)) . '</td>';
+        echo '</tr>';
+    }
+
+    /**
      * Converte a taxa negativa do PIX em desconto do pedido.
      *
      * No carrinho/checkout o WooCommerce só oferece fee negativa de forma simples,
@@ -143,6 +199,10 @@ class DW_Pix_Core {
             $pix_discount_total += abs($fee_total);
             $pix_discount_tax += abs((float) $fee_item->get_total_tax());
             $order->remove_item($item_id);
+        }
+
+        if ($pix_discount_total <= 0) {
+            $pix_discount_total = $this->get_session_pix_discount_amount();
         }
 
         if ($pix_discount_total <= 0) {
@@ -304,6 +364,55 @@ class DW_Pix_Core {
     }
 
     /**
+     * Calcula o valor do desconto global PIX para o contexto atual.
+     *
+     * @param WC_Cart $cart Objeto do carrinho.
+     * @return float
+     */
+    private function get_global_pix_discount_amount($cart) {
+        if (is_admin() && !defined('DOING_AJAX')) {
+            $this->set_session_pix_discount_amount(0);
+            return 0;
+        }
+
+        if (!$this->is_checkout_context()) {
+            $this->set_session_pix_discount_amount(0);
+            return 0;
+        }
+
+        $chosen = WC()->session ? WC()->session->get('chosen_payment_method') : '';
+        if (!$this->is_pix_payment($chosen)) {
+            $this->set_session_pix_discount_amount(0);
+            return 0;
+        }
+
+        $global_settings = $this->get_global_settings();
+        $global_discount = isset($global_settings['global_discount']) ? trim($global_settings['global_discount']) : '';
+        if ($global_discount === '' || (float) $global_discount <= 0 || (float) $global_discount > 100) {
+            $this->set_session_pix_discount_amount(0);
+            return 0;
+        }
+
+        $subtotal = $this->get_subtotal_for_pix_discount($cart);
+        if ($subtotal <= 0) {
+            $this->set_session_pix_discount_amount(0);
+            return 0;
+        }
+
+        $discount_amount = ($subtotal * (float) $global_discount) / 100;
+        $discount_amount = (float) wc_format_decimal($discount_amount, wc_get_price_decimals());
+
+        if ($discount_amount <= 0) {
+            $this->set_session_pix_discount_amount(0);
+            return 0;
+        }
+
+        $this->set_session_pix_discount_amount($discount_amount);
+
+        return $discount_amount;
+    }
+
+    /**
      * Retorna o rótulo padrão do desconto PIX global.
      *
      * @param float $global_discount Percentual do desconto.
@@ -319,6 +428,32 @@ class DW_Pix_Core {
             __('%s%% OFF no PIX', 'dw-parcelas-customizadas-woo'),
             str_replace('.', ',', $formatted_discount)
         );
+    }
+
+    /**
+     * Salva o valor atual do desconto PIX na sessão.
+     *
+     * @param float $discount_amount Valor do desconto.
+     */
+    private function set_session_pix_discount_amount($discount_amount) {
+        if (!WC()->session || !method_exists(WC()->session, 'set')) {
+            return;
+        }
+
+        WC()->session->set('dw_pix_discount_amount', (float) $discount_amount);
+    }
+
+    /**
+     * Recupera o valor do desconto PIX salvo na sessão.
+     *
+     * @return float
+     */
+    private function get_session_pix_discount_amount() {
+        if (!WC()->session || !method_exists(WC()->session, 'get')) {
+            return 0;
+        }
+
+        return (float) WC()->session->get('dw_pix_discount_amount', 0);
     }
 
     /**
